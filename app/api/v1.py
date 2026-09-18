@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.api.schemas import (
     EvidenceCreate,
+    HuntingRequest,
     InvestigationCreate,
     IOCCreate,
     RiskUpdate,
@@ -12,9 +13,11 @@ from app.api.schemas import (
     StatusUpdate,
 )
 from app.models.evidence import Evidence
+from app.models.hunting import ThreatHuntingResult
 from app.models.investigation import InvestigationCase
 from app.models.ioc import IOC
 from app.services.evidence_manager import EvidenceManager
+from app.services.hunting_service import ThreatHuntingService
 from app.services.investigation_manager import InvestigationManager
 from app.services.ioc_manager import IOCManager
 
@@ -31,6 +34,10 @@ def get_investigation_manager(request: Request) -> InvestigationManager:
 
 def get_evidence_manager(request: Request) -> EvidenceManager:
     return request.app.state.evidence_manager
+
+
+def get_hunting_service(request: Request) -> ThreatHuntingService:
+    return request.app.state.hunting_service
 
 
 @router.post(
@@ -302,3 +309,62 @@ def delete_evidence(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evidence not found",
         )
+
+
+@router.post(
+    "/investigations/{case_id}/hunt",
+    response_model=ThreatHuntingResult,
+)
+def hunt_investigation(
+    case_id: str,
+    payload: HuntingRequest,
+    request: Request,
+) -> ThreatHuntingResult:
+    investigation_manager = get_investigation_manager(request)
+    case = investigation_manager.get(case_id)
+
+    if case is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation case not found",
+        )
+
+    iocs: list[IOC] = []
+    ioc_manager = get_ioc_manager(request)
+
+    for ioc_id in payload.ioc_ids:
+        ioc = ioc_manager.get(ioc_id)
+
+        if ioc is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"IOC not found: {ioc_id}",
+            )
+
+        iocs.append(ioc)
+
+    evidence: list[Evidence] = []
+    evidence_manager = get_evidence_manager(request)
+
+    for evidence_id in payload.evidence_ids:
+        item = evidence_manager.get(evidence_id)
+
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Evidence not found: {evidence_id}",
+            )
+
+        if item.case_id != case_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Evidence belongs to another case",
+            )
+
+        evidence.append(item)
+
+    return get_hunting_service(request).investigate(
+        case,
+        iocs,
+        evidence,
+    )

@@ -56,3 +56,10 @@ class EvidenceCreate(BaseModel):
     value: str = Field(min_length=1)
     description: str = ""
     collected_at: datetime | None = None
+
+
+class HuntingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ioc_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)

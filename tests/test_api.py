@@ -291,3 +291,199 @@ def test_extra_api_fields_are_rejected(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def create_ioc(client: TestClient, ioc_id: str, value: str) -> None:
+    response = client.post(
+        "/api/v1/iocs",
+        json={
+            "id": ioc_id,
+            "type": "domain",
+            "value": value,
+            "source": "test-feed",
+            "confidence": 90,
+        },
+    )
+    assert response.status_code == 201
+
+
+def create_case(client: TestClient, case_id: str = "CASE-000001") -> None:
+    response = client.post(
+        "/api/v1/investigations",
+        json=investigation_payload(case_id),
+    )
+    assert response.status_code == 201
+
+
+def create_evidence_for_case(
+    client: TestClient,
+    evidence_id: str = "EVD-000001",
+    case_id: str = "CASE-000001",
+    value: str = "malicious.example",
+    description: str = "SSH brute force detected",
+) -> None:
+    response = client.post(
+        "/api/v1/evidence",
+        json={
+            "id": evidence_id,
+            "case_id": case_id,
+            "type": "log",
+            "source": "/var/log/auth.log",
+            "value": value,
+            "description": description,
+        },
+    )
+    assert response.status_code == 201
+
+
+def test_hunt_endpoint_runs_full_workflow(client: TestClient) -> None:
+    create_case(client)
+    create_ioc(client, "IOC-000001", "malicious.example")
+    create_evidence_for_case(client)
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": ["IOC-000001"],
+            "evidence_ids": ["EVD-000001"],
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["case_id"] == "CASE-000001"
+    assert len(data["matches"]) == 1
+    assert data["matches"][0]["ioc_id"] == "IOC-000001"
+    assert data["matches"][0]["evidence_id"] == "EVD-000001"
+    assert data["timeline"][0]["evidence_id"] == "EVD-000001"
+    assert data["mitre_mappings"][0]["technique"]["id"] == "T1110"
+    assert data["risk"]["factors"]["ioc_confidence"] == 90
+    assert data["report"]["case_id"] == "CASE-000001"
+
+
+def test_hunt_endpoint_ignores_unmatched_ioc_for_risk(
+    client: TestClient,
+) -> None:
+    create_case(client)
+    create_ioc(client, "IOC-000001", "malicious.example")
+    create_ioc(client, "IOC-000002", "benign.example")
+    create_evidence_for_case(client)
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": ["IOC-000001", "IOC-000002"],
+            "evidence_ids": ["EVD-000001"],
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    assert [match["ioc_id"] for match in data["matches"]] == [
+        "IOC-000001",
+    ]
+    assert data["risk"]["factors"]["ioc_confidence"] == 90
+
+
+def test_hunt_missing_case_returns_not_found(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/investigations/CASE-999999/hunt",
+        json={
+            "ioc_ids": [],
+            "evidence_ids": [],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_hunt_missing_ioc_returns_not_found(client: TestClient) -> None:
+    create_case(client)
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": ["IOC-999999"],
+            "evidence_ids": [],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "IOC not found: IOC-999999"
+
+
+def test_hunt_missing_evidence_returns_not_found(
+    client: TestClient,
+) -> None:
+    create_case(client)
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": [],
+            "evidence_ids": ["EVD-999999"],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Evidence not found: EVD-999999"
+
+
+def test_hunt_rejects_evidence_from_another_case(
+    client: TestClient,
+) -> None:
+    create_case(client, "CASE-000001")
+    create_case(client, "CASE-000002")
+    create_evidence_for_case(
+        client,
+        case_id="CASE-000002",
+    )
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": [],
+            "evidence_ids": ["EVD-000001"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Evidence belongs to another case"
+
+
+def test_hunt_accepts_empty_selection(client: TestClient) -> None:
+    create_case(client)
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": [],
+            "evidence_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["matches"] == []
+    assert data["timeline"] == []
+    assert data["mitre_mappings"] == []
+    assert data["risk"]["factors"]["ioc_confidence"] == 0
+    assert data["report"]["case_id"] == "CASE-000001"
+
+
+def test_hunt_rejects_extra_request_fields(client: TestClient) -> None:
+    create_case(client)
+
+    response = client.post(
+        "/api/v1/investigations/CASE-000001/hunt",
+        json={
+            "ioc_ids": [],
+            "evidence_ids": [],
+            "unexpected": "value",
+        },
+    )
+
+    assert response.status_code == 422
