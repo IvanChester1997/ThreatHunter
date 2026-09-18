@@ -1,0 +1,16 @@
+[project]
+name = "threathunter"
+version = "0.1.0"
+description = "Threat Hunting and Incident Response platform"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

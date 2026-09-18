@@ -1,0 +1,8 @@
+services:
+  threathunter:
+    build: .
+    container_name: threathunter
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
